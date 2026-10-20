@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10201d">
+  <title>RX385 Activity Logger</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0d1715; --panel:#14231f; --line:#2b4039; --text:#edf4ed; --muted:#a7b9ae; --accent:#a4df78; --red:#ff8277; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:radial-gradient(ellipse at 80% 0%,#233b31 0,transparent 42%),var(--bg); color:var(--text); font:16px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(760px,100% - 32px); margin:48px auto; }
+    header { margin-bottom:24px; }
+    .eyebrow { color:var(--accent); text-transform:uppercase; letter-spacing:.14em; font-size:.75rem; font-weight:750; }
+    h1 { margin:6px 0; font-size:clamp(2rem,7vw,3rem); line-height:1.08; letter-spacing:-.04em; }
+    p { color:var(--muted); margin:.5rem 0; }
+    .card { background:color-mix(in srgb,var(--panel) 94%,transparent); border:1px solid var(--line); border-radius:18px; padding:22px; margin:16px 0; box-shadow:0 18px 50px #0002; }
+    .notice { border-left:3px solid var(--accent); padding:10px 14px; background:#a4df7810; border-radius:5px; font-size:.93rem; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+    label { display:grid; gap:6px; font-weight:650; }
+    select,input { width:100%; min-height:44px; padding:9px 11px; color:var(--text); background:#0b1412; border:1px solid var(--line); border-radius:9px; font:inherit; }
+    input[type=range] { padding:0; accent-color:var(--accent); }
+    .threshold { display:flex; align-items:center; gap:12px; }
+    .threshold input { flex:1; }
+    .threshold output { min-width:4.2em; color:var(--accent); font-variant-numeric:tabular-nums; }
+    .buttons { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
+    button { cursor:pointer; border:1px solid var(--line); border-radius:10px; background:#20332c; color:var(--text); min-height:44px; padding:9px 16px; font:inherit; font-weight:700; }
+    button.primary { background:var(--accent); color:#102013; border-color:var(--accent); }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .statusrow { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .pill { display:inline-flex; align-items:center; gap:8px; color:var(--muted); font-size:.88rem; }
+    .dot { width:9px;height:9px;border-radius:50%;background:#75847b; }
+    .dot.live { background:var(--accent); box-shadow:0 0 12px var(--accent); }
+    .meter { height:10px; border-radius:99px; background:#09110f; overflow:hidden; margin:16px 0 6px; border:1px solid #263a32; }
+    .meter span { display:block; height:100%; width:0; background:linear-gradient(90deg,#7bbf5e,var(--accent)); transition:width .08s linear; }
+    .reading { color:var(--muted); font-size:.85rem; font-variant-numeric:tabular-nums; }
+    .loghead { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    h2 { margin:0; font-size:1.15rem; }
+    .events { padding:0; margin:14px 0 0; list-style:none; max-height:280px; overflow:auto; }
+    .events li { display:flex; gap:12px; padding:10px 0; border-top:1px solid var(--line); font-size:.91rem; }
+    time { white-space:nowrap; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .empty { color:var(--muted); padding:16px 0; }
+    footer { color:#81938a; font-size:.82rem; margin:20px 2px; }
+    @media(max-width:560px){main{margin:28px auto}.grid{grid-template-columns:1fr}.card{padding:17px}.statusrow{align-items:flex-start;flex-direction:column}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Receive only · Browser prototype</div>
+    <h1>RX385 Activity Logger</h1>
+    <p>Log audio activity while you manually scan the radio. The page listens to a microphone; it cannot tune or control the RX385.</p>
+  </header>
+  <section class="card notice"><strong>Safe setup:</strong> Use your computer microphone near the radio speaker. Don’t wire the radio’s speaker output into a computer input until the electrical levels and wiring have been checked.</section>
+  <section class="card">
+    <div class="grid">
+      <label>Channel label
+        <select id="channel"></select>
+      </label>
+      <label>Privacy code label
+        <select id="code"></select>
+      </label>
+    </div>
+    <label style="margin-top:18px">Activity threshold
+      <div class="threshold"><input id="threshold" type="range" min="0.005" max="0.15" step="0.005" value="0.025"><output id="thresholdValue">0.025</output></div>
+    </label>
+    <div class="buttons">
+      <button id="start" class="primary">Start microphone</button>
+      <button id="stop" disabled>Stop</button>
+    </div>
+  </section>
+  <section class="card" aria-live="polite">
+    <div class="statusrow"><strong id="activity">Not listening</strong><span class="pill"><span id="dot" class="dot"></span><span id="status">Microphone permission not requested</span></span></div>
+    <div class="meter" aria-label="Live audio level"><span id="bar"></span></div>
+    <div class="reading">Input level <span id="level">0.000</span> · Detection threshold <span id="thresholdRead">0.025</span></div>
+  </section>
+  <section class="card">
+    <div class="loghead"><h2>Activity log</h2><button id="download" disabled>Download CSV</button></div>
+    <ul id="events" class="events"><li class="empty">No activity logged yet.</li></ul>
+  </section>
+  <footer>Runs locally in this browser tab after the page loads. Microphone access requires a secure page such as GitHub Pages or localhost. Audio is analyzed in the browser and is not uploaded by this page.</footer>
+</main>
+<script>
+(() => {
+  const channel = document.querySelector('#channel');
+  const code = document.querySelector('#code');
+  const threshold = document.querySelector('#threshold');
+  const thresholdValue = document.querySelector('#thresholdValue');
+  const thresholdRead = document.querySelector('#thresholdRead');
+  const start = document.querySelector('#start');
+  const stop = document.querySelector('#stop');
+  const download = document.querySelector('#download');
+  const status = document.querySelector('#status');
+  const dot = document.querySelector('#dot');
+  const activity = document.querySelector('#activity');
+  const bar = document.querySelector('#bar');
+  const level = document.querySelector('#level');
+  const events = document.querySelector('#events');
+  const records = [];
+  let stream, context, analyser, frame, active = false, lastSignal = 0, startTime = '';
+  for (let i=1;i<=22;i++) channel.add(new Option(`Channel ${i}`, i));
+  for (let i=0;i<=121;i++) code.add(new Option(i===0?'Code off':`Code ${i}`, i));
+  function setThreshold(){ thresholdValue.value=Number(threshold.value).toFixed(3); thresholdRead.textContent=thresholdValue.value; }
+  threshold.addEventListener('input',setThreshold);
+  function stamp(){return new Date().toISOString();}
+  function log(kind, rms, when=stamp()) {
+    const row={event:kind,timestamp_utc:when,channel:channel.value,privacy_code:code.value,rms:rms.toFixed(5)};
+    records.push(row); download.disabled=false;
+    const empty=events.querySelector('.empty'); if(empty) empty.remove();
+    const li=document.createElement('li');
+    const time=document.createElement('time'); time.dateTime=when; time.textContent=new Date(when).toLocaleTimeString();
+    const text=document.createElement('span'); text.textContent=`Activity ${kind} · channel ${row.channel}, code ${row.privacy_code} · level ${rms.toFixed(3)}`;
+    li.append(time,text); events.prepend(li);
+  }
+  function update(){
+    if(!analyser) return;
+    const samples=new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
+    let sum=0; for(const x of samples) sum+=x*x;
+    const rms=Math.sqrt(sum/samples.length); const t=performance.now();
+    level.textContent=rms.toFixed(3); bar.style.width=`${Math.min(100,rms*400)}%`;
+    const limit=Number(threshold.value);
+    if(rms>=limit){lastSignal=t;if(!active){active=true;startTime=stamp();activity.textContent='Audio activity detected';activity.style.color='var(--accent)';log('start',rms,startTime);}}
+    else if(active && t-lastSignal>800){active=false;activity.textContent='Listening';activity.style.color='';log('end',rms);}
+    frame=requestAnimationFrame(update);
+  }
+  start.addEventListener('click',async()=>{
+    if(!navigator.mediaDevices?.getUserMedia){status.textContent='Microphone capture unavailable; use HTTPS or localhost';return;}
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+      context=new (window.AudioContext||window.webkitAudioContext)();
+      const source=context.createMediaStreamSource(stream); analyser=context.createAnalyser(); analyser.fftSize=2048; source.connect(analyser);
+      status.textContent='Microphone active'; dot.classList.add('live'); activity.textContent='Listening'; start.disabled=true; stop.disabled=false;
+      update();
+    }catch(e){status.textContent=e.name==='NotAllowedError'?'Microphone permission denied':`Microphone error: ${e.message}`;}
+  });
+  stop.addEventListener('click',async()=>{
+    cancelAnimationFrame(frame); if(active){active=false;log('end',Number(level.textContent)||0);}
+    stream?.getTracks().forEach(t=>t.stop()); await context?.close(); stream=null;context=null;analyser=null;
+    dot.classList.remove('live');status.textContent='Stopped';activity.textContent='Not listening';start.disabled=false;stop.disabled=true;bar.style.width='0%';level.textContent='0.000';
+  });
+  download.addEventListener('click',()=>{
+    const cols=['event','timestamp_utc','channel','privacy_code','rms'];
+    const csv=[cols.join(','),...records.map(r=>cols.map(k=>`"${String(r[k]).replaceAll('"','""')}"`).join(','))].join('\r\n');
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='rx385_activity.csv';a.click();URL.revokeObjectURL(a.href);
+  });
+})();
+</script>
+</body>
+</html>
