@@ -49,7 +49,7 @@
 <main>
   <header>
     <div class="eyebrow">Receive only · Browser prototype</div>
-    <h1>RX385 Activity Logger</h1>
+    <h1>RX385 Activity Logger <small style="font-size:.35em;color:var(--accent)">v3</small></h1>
     <p>Log audio activity while the RX385 scans channels automatically, or while monitoring one fixed channel. Microphone audio cannot reveal the current RF channel.</p>
   </header>
   <section class="card notice"><strong>Safe setup:</strong> Use your computer microphone near the radio speaker. Don’t wire the radio’s speaker output into a computer input until the electrical levels and wiring have been checked.</section>
@@ -77,6 +77,17 @@
       <button id="stop" disabled>Stop</button>
     </div>
   </section>
+  <section class="card">
+    <h2>Mark radio event</h2>
+    <p>Record the channel shown by your RX385 when it pauses on a signal.</p>
+    <div class="grid">
+      <label>Channel<select id="markedChannel"></select></label>
+      <label>Privacy code<select id="markedCode"></select></label>
+      <label>Type<select id="markedType"><option>Speech</option><option>Static pop</option><option>Other</option></select></label>
+      <label>Notes<input id="markedNote" maxlength="160" placeholder="Optional description"></label>
+    </div>
+    <div class="buttons"><button id="markEvent" class="primary">Mark radio event</button></div>
+  </section>
   <section class="card" aria-live="polite">
     <div class="statusrow"><strong id="activity">Not listening</strong><span class="pill"><span id="dot" class="dot"></span><span id="status">Microphone permission not requested</span></span></div>
     <div class="meter" aria-label="Live audio level"><span id="bar"></span></div>
@@ -94,6 +105,11 @@
   const channelField = document.querySelector('#channelField');
   const codeField = document.querySelector('#codeField');
   const modeHelp = document.querySelector('#modeHelp');
+  const markedChannel=document.querySelector('#markedChannel');
+  const markedCode=document.querySelector('#markedCode');
+  const markedType=document.querySelector('#markedType');
+  const markedNote=document.querySelector('#markedNote');
+  const markEvent=document.querySelector('#markEvent');
   const channel = document.querySelector('#channel');
   const code = document.querySelector('#code');
   const threshold = document.querySelector('#threshold');
@@ -109,9 +125,13 @@
   const level = document.querySelector('#level');
   const events = document.querySelector('#events');
   const records = [];
-  let stream, context, analyser, frame, active = false, lastSignal = 0, startTime = '';
+  let stream, context, analyser, frame, active = false, lastSignal = 0, startTime = '', startPerf = 0;
   for (let i=1;i<=22;i++) channel.add(new Option(`Channel ${i}`, i));
   for (let i=0;i<=121;i++) code.add(new Option(i===0?'Code off':`Code ${i}`, i));
+  markedChannel.add(new Option('Unknown','Unknown'));
+  markedCode.add(new Option('Unknown','Unknown'));
+  for(let i=1;i<=22;i++) markedChannel.add(new Option('Channel '+i,String(i)));
+  for(let i=0;i<=121;i++) markedCode.add(new Option(i===0?'Code off':'Code '+i,String(i)));
   function setMode(){
     const fixed=mode.value==='fixed';
     channelField.hidden=!fixed;
@@ -125,8 +145,18 @@
   function setThreshold(){ thresholdValue.value=Number(threshold.value).toFixed(3); thresholdRead.textContent=thresholdValue.value; }
   threshold.addEventListener('input',setThreshold);
   function stamp(){return new Date().toISOString();}
+  markEvent.addEventListener('click',()=>{
+    const when=stamp();
+    const row={event:'manual',timestamp_utc:when,channel:markedChannel.value,privacy_code:markedCode.value,rms:'',duration_ms:'',classification:markedType.value,note:markedNote.value.trim()};
+    records.push(row);download.disabled=false;
+    const empty=events.querySelector('.empty');if(empty)empty.remove();
+    const li=document.createElement('li');
+    const tm=document.createElement('time');tm.dateTime=when;tm.textContent=new Date(when).toLocaleTimeString();
+    const info=document.createElement('span');info.textContent='Marked '+row.classification+' · channel '+row.channel+', code '+row.privacy_code+(row.note?' · '+row.note:'');
+    li.append(tm,info);events.prepend(li);markedNote.value='';
+  });
   function log(kind, rms, when=stamp()) {
-    const row={event:kind,timestamp_utc:when,channel:mode.value==='scan'?'Unknown':channel.value,privacy_code:mode.value==='scan'?'Unknown':code.value,rms:rms.toFixed(5)};
+    const row={event:kind,timestamp_utc:when,channel:mode.value==='scan'?'Unknown':channel.value,privacy_code:mode.value==='scan'?'Unknown':code.value,rms:rms.toFixed(5),duration_ms:kind==='end'?Math.round(performance.now()-startPerf):'',classification:'Audio threshold',note:''};
     records.push(row); download.disabled=false;
     const empty=events.querySelector('.empty'); if(empty) empty.remove();
     const li=document.createElement('li');
@@ -141,7 +171,7 @@
     const rms=Math.sqrt(sum/samples.length); const t=performance.now();
     level.textContent=rms.toFixed(3); bar.style.width=`${Math.min(100,rms*400)}%`;
     const limit=Number(threshold.value);
-    if(rms>=limit){lastSignal=t;if(!active){active=true;startTime=stamp();activity.textContent='Audio activity detected';activity.style.color='var(--accent)';log('start',rms,startTime);}}
+    if(rms>=limit){lastSignal=t;if(!active){active=true;startTime=stamp();startPerf=t;activity.textContent='Audio activity detected';activity.style.color='var(--accent)';log('start',rms,startTime);}}
     else if(active && t-lastSignal>800){active=false;activity.textContent='Listening';activity.style.color='';log('end',rms);}
     frame=requestAnimationFrame(update);
   }
@@ -161,7 +191,7 @@
     dot.classList.remove('live');status.textContent='Stopped';activity.textContent='Not listening';start.disabled=false;stop.disabled=true;bar.style.width='0%';level.textContent='0.000';
   });
   download.addEventListener('click',()=>{
-    const cols=['event','timestamp_utc','channel','privacy_code','rms'];
+    const cols=['event','timestamp_utc','channel','privacy_code','rms','duration_ms','classification','note'];
     const csv=[cols.join(','),...records.map(r=>cols.map(k=>`"${String(r[k]).replaceAll('"','""')}"`).join(','))].join('\r\n');
     const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='rx385_activity.csv';a.click();URL.revokeObjectURL(a.href);
   });
