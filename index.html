@@ -23,6 +23,7 @@
     .threshold { display:flex; align-items:center; gap:12px; }
     .threshold input { flex:1; }
     .threshold output { min-width:4.2em; color:var(--accent); font-variant-numeric:tabular-nums; }
+    [hidden] { display:none !important; }
     .buttons { display:flex; gap:10px; flex-wrap:wrap; margin-top:18px; }
     button { cursor:pointer; border:1px solid var(--line); border-radius:10px; background:#20332c; color:var(--text); min-height:44px; padding:9px 16px; font:inherit; font-weight:700; }
     button.primary { background:var(--accent); color:#102013; border-color:var(--accent); }
@@ -49,21 +50,28 @@
   <header>
     <div class="eyebrow">Receive only · Browser prototype</div>
     <h1>RX385 Activity Logger</h1>
-    <p>Log audio activity while you manually scan the radio. The page listens to a microphone; it cannot tune or control the RX385.</p>
+    <p>Log audio activity while the RX385 scans channels automatically, or while monitoring one fixed channel. Microphone audio cannot reveal the current RF channel.</p>
   </header>
   <section class="card notice"><strong>Safe setup:</strong> Use your computer microphone near the radio speaker. Don’t wire the radio’s speaker output into a computer input until the electrical levels and wiring have been checked.</section>
   <section class="card">
     <div class="grid">
-      <label>Channel label
+      <label>Radio operating mode
+        <select id="mode">
+          <option value="scan">Scanning channels automatically</option>
+          <option value="fixed">Fixed channel (manual label)</option>
+        </select>
+      </label>
+      <label id="channelField" hidden>Channel label
         <select id="channel"></select>
       </label>
-      <label>Privacy code label
+      <label id="codeField" hidden>Privacy code label
         <select id="code"></select>
       </label>
     </div>
     <label style="margin-top:18px">Activity threshold
       <div class="threshold"><input id="threshold" type="range" min="0.005" max="0.15" step="0.005" value="0.025"><output id="thresholdValue">0.025</output></div>
     </label>
+    <p id="modeHelp">Scan mode: activity is logged with channel and privacy code marked Unknown. The microphone cannot read the radio display or identify RF channels.</p>
     <div class="buttons">
       <button id="start" class="primary">Start microphone</button>
       <button id="stop" disabled>Stop</button>
@@ -82,6 +90,10 @@
 </main>
 <script>
 (() => {
+  const mode = document.querySelector('#mode');
+  const channelField = document.querySelector('#channelField');
+  const codeField = document.querySelector('#codeField');
+  const modeHelp = document.querySelector('#modeHelp');
   const channel = document.querySelector('#channel');
   const code = document.querySelector('#code');
   const threshold = document.querySelector('#threshold');
@@ -100,11 +112,21 @@
   let stream, context, analyser, frame, active = false, lastSignal = 0, startTime = '';
   for (let i=1;i<=22;i++) channel.add(new Option(`Channel ${i}`, i));
   for (let i=0;i<=121;i++) code.add(new Option(i===0?'Code off':`Code ${i}`, i));
+  function setMode(){
+    const fixed=mode.value==='fixed';
+    channelField.hidden=!fixed;
+    codeField.hidden=!fixed;
+    modeHelp.textContent=fixed
+      ? 'Fixed mode: select the channel and privacy code displayed on the radio. These are manual labels, not automatically detected.'
+      : 'Scan mode: activity is logged with channel and privacy code marked Unknown. The microphone cannot read the radio display or identify RF channels.';
+  }
+  mode.addEventListener('change',setMode);
+  setMode();
   function setThreshold(){ thresholdValue.value=Number(threshold.value).toFixed(3); thresholdRead.textContent=thresholdValue.value; }
   threshold.addEventListener('input',setThreshold);
   function stamp(){return new Date().toISOString();}
   function log(kind, rms, when=stamp()) {
-    const row={event:kind,timestamp_utc:when,channel:channel.value,privacy_code:code.value,rms:rms.toFixed(5)};
+    const row={event:kind,timestamp_utc:when,channel:mode.value==='scan'?'Unknown':channel.value,privacy_code:mode.value==='scan'?'Unknown':code.value,rms:rms.toFixed(5)};
     records.push(row); download.disabled=false;
     const empty=events.querySelector('.empty'); if(empty) empty.remove();
     const li=document.createElement('li');
