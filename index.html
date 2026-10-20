@@ -49,7 +49,7 @@
 <main>
   <header>
     <div class="eyebrow">Receive only · Browser prototype</div>
-    <h1>RX385 Activity Logger <small style="font-size:.35em;color:var(--accent)">v3</small></h1>
+    <h1>RX385 Activity Logger <small style="font-size:.35em;color:var(--accent)">v4</small></h1>
     <p>Log audio activity while the RX385 scans channels automatically, or while monitoring one fixed channel. Microphone audio cannot reveal the current RF channel.</p>
   </header>
   <section class="card notice"><strong>Safe setup:</strong> Use your computer microphone near the radio speaker. Don’t wire the radio’s speaker output into a computer input until the electrical levels and wiring have been checked.</section>
@@ -75,6 +75,7 @@
     <div class="buttons">
       <button id="start" class="primary">Start microphone</button>
       <button id="stop" disabled>Stop</button>
+      <button id="calibrate" disabled>Calibrate quiet-room threshold</button>
     </div>
   </section>
   <section class="card">
@@ -95,9 +96,11 @@
   </section>
   <section class="card">
     <div class="loghead"><h2>Activity log</h2><button id="download" disabled>Download CSV</button></div>
+    <p id="saveStatus" role="status">Checking local storage…</p>
+    <div class="buttons"><button id="clearLog" disabled>Clear saved log</button></div>
     <ul id="events" class="events"><li class="empty">No activity logged yet.</li></ul>
   </section>
-  <footer>Runs locally in this browser tab after the page loads. Microphone access requires a secure page such as GitHub Pages or localhost. Audio is analyzed in the browser and is not uploaded by this page.</footer>
+  <footer>Runs locally in this browser tab after the page loads. Microphone access requires a secure page such as GitHub Pages or localhost. Audio is analyzed in the browser and is not uploaded by this page. Event logs are saved locally on this device when browser storage is available; CSV is your independent backup.</footer>
 </main>
 <script>
 (() => {
@@ -118,6 +121,9 @@
   const start = document.querySelector('#start');
   const stop = document.querySelector('#stop');
   const download = document.querySelector('#download');
+  const calibrate = document.querySelector('#calibrate');
+  const saveStatus = document.querySelector('#saveStatus');
+  const clearLog = document.querySelector('#clearLog');
   const status = document.querySelector('#status');
   const dot = document.querySelector('#dot');
   const activity = document.querySelector('#activity');
@@ -125,6 +131,52 @@
   const level = document.querySelector('#level');
   const events = document.querySelector('#events');
   const records = [];
+  const STORAGE_KEY='rx385-activity-v4';
+  let storageAvailable=true;
+  function saveRecords(){
+    try{
+      localStorage.setItem(STORAGE_KEY,JSON.stringify(records));
+      saveStatus.textContent=records.length+' event rows saved in this browser. Export CSV for a separate backup.';
+    }catch(e){
+      storageAvailable=false;
+      saveStatus.textContent='Local save unavailable or full; download CSV before leaving this page.';
+    }
+  }
+  function appendRow(row){
+    records.push(row);
+    download.disabled=false;
+    clearLog.disabled=false;
+    renderRow(row);
+    saveRecords();
+  }
+  function renderRow(row){
+    const empty=events.querySelector('.empty');if(empty)empty.remove();
+    const li=document.createElement('li');
+    const tm=document.createElement('time');tm.dateTime=row.timestamp_utc;tm.textContent=new Date(row.timestamp_utc).toLocaleTimeString();
+    const info=document.createElement('span');
+    info.textContent=row.event==='manual'
+      ? 'Marked '+row.classification+' · channel '+row.channel+', code '+row.privacy_code+(row.note?' · '+row.note:'')
+      : 'Activity '+row.event+' · channel '+row.channel+', code '+row.privacy_code+' · level '+(Number(row.rms)||0).toFixed(3)+(row.duration_ms!==''?' · '+row.duration_ms+' ms':'');
+    li.append(tm,info);events.prepend(li);
+  }
+  try{
+    const stored=JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
+    if(Array.isArray(stored)){
+      for(const row of stored){
+        if(row&&typeof row==='object'&&typeof row.timestamp_utc==='string'&&typeof row.event==='string'&&records.length<10000){
+          records.push(row);renderRow(row);
+        }
+      }
+    }
+    if(records.length){download.disabled=false;clearLog.disabled=false;}
+    saveStatus.textContent=records.length+' saved event rows restored from this browser.';
+  }catch(e){storageAvailable=false;saveStatus.textContent='Local storage unavailable. Export CSV before closing the page.';}
+  clearLog.addEventListener('click',()=>{
+    if(!confirm('Delete all locally saved RX385 events from this browser? Download CSV first if needed.'))return;
+    records.length=0;events.replaceChildren();
+    const li=document.createElement('li');li.className='empty';li.textContent='No activity logged yet.';events.append(li);
+    download.disabled=true;clearLog.disabled=true;saveRecords();
+  });
   let stream, context, analyser, frame, active = false, lastSignal = 0, startTime = '', startPerf = 0;
   for (let i=1;i<=22;i++) channel.add(new Option(`Channel ${i}`, i));
   for (let i=0;i<=121;i++) code.add(new Option(i===0?'Code off':`Code ${i}`, i));
@@ -148,28 +200,36 @@
   markEvent.addEventListener('click',()=>{
     const when=stamp();
     const row={event:'manual',timestamp_utc:when,channel:markedChannel.value,privacy_code:markedCode.value,rms:'',duration_ms:'',classification:markedType.value,note:markedNote.value.trim()};
-    records.push(row);download.disabled=false;
-    const empty=events.querySelector('.empty');if(empty)empty.remove();
-    const li=document.createElement('li');
-    const tm=document.createElement('time');tm.dateTime=when;tm.textContent=new Date(when).toLocaleTimeString();
-    const info=document.createElement('span');info.textContent='Marked '+row.classification+' · channel '+row.channel+', code '+row.privacy_code+(row.note?' · '+row.note:'');
-    li.append(tm,info);events.prepend(li);markedNote.value='';
+    appendRow(row);markedNote.value='';
   });
   function log(kind, rms, when=stamp()) {
     const row={event:kind,timestamp_utc:when,channel:mode.value==='scan'?'Unknown':channel.value,privacy_code:mode.value==='scan'?'Unknown':code.value,rms:rms.toFixed(5),duration_ms:kind==='end'?Math.round(performance.now()-startPerf):'',classification:'Audio threshold',note:''};
-    records.push(row); download.disabled=false;
-    const empty=events.querySelector('.empty'); if(empty) empty.remove();
-    const li=document.createElement('li');
-    const time=document.createElement('time'); time.dateTime=when; time.textContent=new Date(when).toLocaleTimeString();
-    const text=document.createElement('span'); text.textContent=`Activity ${kind} · channel ${row.channel}, code ${row.privacy_code} · level ${rms.toFixed(3)}`;
-    li.append(time,text); events.prepend(li);
+    appendRow(row);
   }
+  let calibration=null;
+  calibrate.addEventListener('click',()=>{
+    if(!analyser)return;
+    calibration={samples:[],until:performance.now()+3500};
+    calibrate.disabled=true;calibrate.textContent='Calibrating… keep room quiet';
+  });
   function update(){
     if(!analyser) return;
     const samples=new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
     let sum=0; for(const x of samples) sum+=x*x;
     const rms=Math.sqrt(sum/samples.length); const t=performance.now();
     level.textContent=rms.toFixed(3); bar.style.width=`${Math.min(100,rms*400)}%`;
+    if(calibration){
+      calibration.samples.push(rms);
+      if(t>=calibration.until){
+        const values=calibration.samples.sort((a,b)=>a-b);
+        const p90=values[Math.floor((values.length-1)*.9)]||0;
+        const suggested=Math.min(.15,Math.max(.005,Math.ceil((p90*2.5)/.005)*.005));
+        threshold.value=suggested.toFixed(3);
+        setThreshold();
+        calibration=null;calibrate.disabled=false;calibrate.textContent='Calibrate quiet-room threshold';
+        status.textContent='Calibration complete (estimated threshold '+suggested.toFixed(3)+'). Test with radio audio.';
+      }
+    }
     const limit=Number(threshold.value);
     if(rms>=limit){lastSignal=t;if(!active){active=true;startTime=stamp();startPerf=t;activity.textContent='Audio activity detected';activity.style.color='var(--accent)';log('start',rms,startTime);}}
     else if(active && t-lastSignal>800){active=false;activity.textContent='Listening';activity.style.color='';log('end',rms);}
@@ -181,14 +241,14 @@
       stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
       context=new (window.AudioContext||window.webkitAudioContext)();
       const source=context.createMediaStreamSource(stream); analyser=context.createAnalyser(); analyser.fftSize=2048; source.connect(analyser);
-      status.textContent='Microphone active'; dot.classList.add('live'); activity.textContent='Listening'; start.disabled=true; stop.disabled=false;
+      status.textContent='Microphone active'; dot.classList.add('live'); activity.textContent='Listening'; start.disabled=true; stop.disabled=false; calibrate.disabled=false;
       update();
     }catch(e){status.textContent=e.name==='NotAllowedError'?'Microphone permission denied':`Microphone error: ${e.message}`;}
   });
   stop.addEventListener('click',async()=>{
     cancelAnimationFrame(frame); if(active){active=false;log('end',Number(level.textContent)||0);}
     stream?.getTracks().forEach(t=>t.stop()); await context?.close(); stream=null;context=null;analyser=null;
-    dot.classList.remove('live');status.textContent='Stopped';activity.textContent='Not listening';start.disabled=false;stop.disabled=true;bar.style.width='0%';level.textContent='0.000';
+    calibration=null;calibrate.disabled=true;calibrate.textContent='Calibrate quiet-room threshold';dot.classList.remove('live');status.textContent='Stopped';activity.textContent='Not listening';start.disabled=false;stop.disabled=true;bar.style.width='0%';level.textContent='0.000';
   });
   download.addEventListener('click',()=>{
     const cols=['event','timestamp_utc','channel','privacy_code','rms','duration_ms','classification','note'];
