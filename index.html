@@ -49,7 +49,7 @@
 <main>
   <header>
     <div class="eyebrow">Receive only · Browser prototype</div>
-    <h1>RX385 Activity Logger <small style="font-size:.35em;color:var(--accent)">v4</small></h1>
+    <h1>RX385 Activity Logger <small style="font-size:.35em;color:var(--accent)">v5</small></h1>
     <p>Log audio activity while the RX385 scans channels automatically, or while monitoring one fixed channel. Microphone audio cannot reveal the current RF channel.</p>
   </header>
   <section class="card notice"><strong>Safe setup:</strong> Use your computer microphone near the radio speaker. Don’t wire the radio’s speaker output into a computer input until the electrical levels and wiring have been checked.</section>
@@ -71,6 +71,22 @@
     <label style="margin-top:18px">Activity threshold
       <div class="threshold"><input id="threshold" type="range" min="0.005" max="0.15" step="0.005" value="0.025"><output id="thresholdValue">0.025</output></div>
     </label>
+    <div class="grid" style="margin-top:16px">
+      <label>Audio analysis filter
+        <select id="audioFilter">
+          <option value="voice">Voice-focused (300–3000 Hz)</option>
+          <option value="raw">Full audio (best for static pops)</option>
+        </select>
+      </label>
+      <label>Minimum sustained sound
+        <select id="minSound">
+          <option value="0">Instant (capture short pops)</option>
+          <option value="120" selected>120 ms (reduce typing clicks)</option>
+          <option value="250">250 ms (stronger click rejection)</option>
+        </select>
+      </label>
+    </div>
+    <p>Voice-focused filtering reduces some low-frequency faucet rumble and high-frequency clicks, but cannot reliably distinguish a radio speaker from voices or other noises in the room. Try full audio if brief radio static goes missing.</p>
     <p id="modeHelp">Scan mode: activity is logged with channel and privacy code marked Unknown. The microphone cannot read the radio display or identify RF channels.</p>
     <div class="buttons">
       <button id="start" class="primary">Start microphone</button>
@@ -100,7 +116,7 @@
     <div class="buttons"><button id="clearLog" disabled>Clear saved log</button></div>
     <ul id="events" class="events"><li class="empty">No activity logged yet.</li></ul>
   </section>
-  <footer>Runs locally in this browser tab after the page loads. Microphone access requires a secure page such as GitHub Pages or localhost. Audio is analyzed in the browser and is not uploaded by this page. Event logs are saved locally on this device when browser storage is available; CSV is your independent backup.</footer>
+  <footer>Filters affect analysis only, not the RX385 hardware. Background noises overlapping radio speech may still trigger detections. Runs locally in this browser tab after the page loads. Microphone access requires a secure page such as GitHub Pages or localhost. Audio is analyzed in the browser and is not uploaded by this page. Event logs are saved locally on this device when browser storage is available; CSV is your independent backup.</footer>
 </main>
 <script>
 (() => {
@@ -115,6 +131,8 @@
   const markEvent=document.querySelector('#markEvent');
   const channel = document.querySelector('#channel');
   const code = document.querySelector('#code');
+  const audioFilter=document.querySelector('#audioFilter');
+  const minSound=document.querySelector('#minSound');
   const threshold = document.querySelector('#threshold');
   const thresholdValue = document.querySelector('#thresholdValue');
   const thresholdRead = document.querySelector('#thresholdRead');
@@ -177,7 +195,7 @@
     const li=document.createElement('li');li.className='empty';li.textContent='No activity logged yet.';events.append(li);
     download.disabled=true;clearLog.disabled=true;saveRecords();
   });
-  let stream, context, analyser, frame, active = false, lastSignal = 0, startTime = '', startPerf = 0;
+  let stream, context, analyser, frame, active = false, lastSignal = 0, startTime = '', startPerf = 0, pendingStart=0, highpass, lowpass, sourceNode;
   for (let i=1;i<=22;i++) channel.add(new Option(`Channel ${i}`, i));
   for (let i=0;i<=121;i++) code.add(new Option(i===0?'Code off':`Code ${i}`, i));
   markedChannel.add(new Option('Unknown','Unknown'));
@@ -212,6 +230,14 @@
     calibration={samples:[],until:performance.now()+3500};
     calibrate.disabled=true;calibrate.textContent='Calibrating… keep room quiet';
   });
+  function configureFilter(){
+    if(!highpass||!lowpass)return;
+    const enabled=audioFilter.value==='voice';
+    highpass.frequency.value=enabled?300:20;
+    lowpass.frequency.value=enabled?3000:20000;
+  }
+  audioFilter.addEventListener('change',configureFilter);
+  minSound.addEventListener('change',()=>{pendingStart=0;});
   function update(){
     if(!analyser) return;
     const samples=new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
@@ -231,8 +257,20 @@
       }
     }
     const limit=Number(threshold.value);
-    if(rms>=limit){lastSignal=t;if(!active){active=true;startTime=stamp();startPerf=t;activity.textContent='Audio activity detected';activity.style.color='var(--accent)';log('start',rms,startTime);}}
-    else if(active && t-lastSignal>800){active=false;activity.textContent='Listening';activity.style.color='';log('end',rms);}
+    if(rms>=limit){
+      if(!pendingStart)pendingStart=t;
+      lastSignal=t;
+      if(!active && t-pendingStart>=Number(minSound.value)){
+        active=true;startTime=stamp();startPerf=t;
+        activity.textContent='Audio activity detected';activity.style.color='var(--accent)';
+        log('start',rms,startTime);
+      }
+    }else{
+      if(!active)pendingStart=0;
+      if(active && t-lastSignal>800){
+        active=false;pendingStart=0;activity.textContent='Listening';activity.style.color='';log('end',rms);
+      }
+    }
     frame=requestAnimationFrame(update);
   }
   start.addEventListener('click',async()=>{
@@ -240,14 +278,18 @@
     try{
       stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
       context=new (window.AudioContext||window.webkitAudioContext)();
-      const source=context.createMediaStreamSource(stream); analyser=context.createAnalyser(); analyser.fftSize=2048; source.connect(analyser);
+      sourceNode=context.createMediaStreamSource(stream);
+      highpass=context.createBiquadFilter();highpass.type='highpass';
+      lowpass=context.createBiquadFilter();lowpass.type='lowpass';
+      analyser=context.createAnalyser();analyser.fftSize=2048;
+      configureFilter();sourceNode.connect(highpass);highpass.connect(lowpass);lowpass.connect(analyser);
       status.textContent='Microphone active'; dot.classList.add('live'); activity.textContent='Listening'; start.disabled=true; stop.disabled=false; calibrate.disabled=false;
       update();
     }catch(e){status.textContent=e.name==='NotAllowedError'?'Microphone permission denied':`Microphone error: ${e.message}`;}
   });
   stop.addEventListener('click',async()=>{
     cancelAnimationFrame(frame); if(active){active=false;log('end',Number(level.textContent)||0);}
-    stream?.getTracks().forEach(t=>t.stop()); await context?.close(); stream=null;context=null;analyser=null;
+    stream?.getTracks().forEach(t=>t.stop()); await context?.close(); stream=null;context=null;analyser=null;sourceNode=null;highpass=null;lowpass=null;pendingStart=0;
     calibration=null;calibrate.disabled=true;calibrate.textContent='Calibrate quiet-room threshold';dot.classList.remove('live');status.textContent='Stopped';activity.textContent='Not listening';start.disabled=false;stop.disabled=true;bar.style.width='0%';level.textContent='0.000';
   });
   download.addEventListener('click',()=>{
