@@ -49,7 +49,7 @@
 <main>
   <header>
     <div class="eyebrow">Receive only · Browser prototype</div>
-    <h1>RX385 Activity Logger <small style="font-size:.35em;color:var(--accent)">v6</small></h1>
+    <h1>RX385 Activity Logger <small style="font-size:.35em;color:var(--accent)">v7</small></h1>
     <p>Log audio activity while the RX385 scans channels automatically, or while monitoring one fixed channel. Microphone audio cannot reveal the current RF channel.</p>
   </header>
   <section class="card notice"><strong>Safe setup:</strong> Use your computer microphone near the radio speaker. Don’t wire the radio’s speaker output into a computer input until the electrical levels and wiring have been checked.</section>
@@ -89,6 +89,20 @@
     <p>Voice filtering and sound-duration gating may suppress nearby typing and running water, but they cannot identify whether sound came from the radio. Very short squelch pops may be missed with 120/250 ms gating.</p>
     <div class="buttons"><button id="sampleNoise" disabled>Sample background noise (5 sec)</button></div>
     <p id="noiseFeedback">Optional: run the faucet or type normally while sampling, with the RX385 silent. This measures a conservative noise threshold; it does not learn to recognize those sounds.</p>
+    <div class="grid" style="margin-top:14px">
+      <label>Detector profile
+        <select id="detectorProfile">
+          <option value="voice">Sustained voice / low false alarms</option>
+          <option value="pop">Brief pops / high sensitivity</option>
+          <option value="both">Both (experimental)</option>
+        </select>
+      </label>
+      <label>Pop sensitivity threshold
+        <input id="popThreshold" type="range" min="0.005" max="0.15" step="0.005" value="0.050">
+        <output id="popRead">0.050</output>
+      </label>
+    </div>
+    <p>Pop detection uses unfiltered audio and a brief peak; typing clicks may resemble squelch pops. Every automatic event is an <strong>unverified sound</strong> until you review it.</p>
     <p id="modeHelp">Scan mode: activity is logged with channel and privacy code marked Unknown. The microphone cannot read the radio display or identify RF channels.</p>
     <div class="buttons">
       <button id="start" class="primary">Start microphone</button>
@@ -114,11 +128,12 @@
   </section>
   <section class="card">
     <div class="loghead"><h2>Activity log</h2><button id="download" disabled>Download CSV</button></div>
+    <p id="reviewStatus">Review detected sounds below: label each as Radio or Background. Your labels do not automatically train a sound classifier.</p>
     <p id="saveStatus" role="status">Checking local storage…</p>
     <div class="buttons"><button id="clearLog" disabled>Clear saved log</button></div>
     <ul id="events" class="events"><li class="empty">No activity logged yet.</li></ul>
   </section>
-  <footer>Noise sampling and filtering affect analysis only, not the RX385 hardware. Background noises overlapping radio speech may still trigger detections. Runs locally in this browser tab after the page loads. Microphone access requires a secure page such as GitHub Pages or localhost. Audio is analyzed in the browser and is not uploaded by this page. Event logs are saved locally on this device when browser storage is available; CSV is your independent backup.</footer>
+  <footer>Event review labels are manual annotations and do not train a machine-learning classifier. Noise sampling and filtering affect analysis only, not the RX385 hardware. Background noises overlapping radio speech may still trigger detections. Runs locally in this browser tab after the page loads. Microphone access requires a secure page such as GitHub Pages or localhost. Audio is analyzed in the browser and is not uploaded by this page. Event logs are saved locally on this device when browser storage is available; CSV is your independent backup.</footer>
 </main>
 <script>
 (() => {
@@ -135,6 +150,9 @@
   const code = document.querySelector('#code');
   const audioFilter=document.querySelector('#audioFilter');
   const minSound=document.querySelector('#minSound');
+  const detectorProfile=document.querySelector('#detectorProfile');
+  const popThreshold=document.querySelector('#popThreshold');
+  const popRead=document.querySelector('#popRead');
   const sampleNoise=document.querySelector('#sampleNoise');
   const noiseFeedback=document.querySelector('#noiseFeedback');
   const threshold = document.querySelector('#threshold');
@@ -153,6 +171,12 @@
   const level = document.querySelector('#level');
   const events = document.querySelector('#events');
   const records = [];
+  popThreshold.addEventListener('input',()=>{popRead.textContent=Number(popThreshold.value).toFixed(3);});
+  const SETTINGS_FIELDS=['threshold','audioFilter','minSound','detectorProfile','popThreshold'];
+  function settingsSnapshot(){
+    return {threshold:Number(threshold.value),filter:audioFilter.value,min_duration_ms:Number(minSound.value),
+      detector_profile:detectorProfile.value,pop_threshold:Number(popThreshold.value)};
+  }
   const STORAGE_KEY='rx385-activity-v4';
   let storageAvailable=true;
   function saveRecords(){
@@ -179,7 +203,16 @@
     info.textContent=row.event==='manual'
       ? 'Marked '+row.classification+' · channel '+row.channel+', code '+row.privacy_code+(row.note?' · '+row.note:'')
       : 'Activity '+row.event+' · channel '+row.channel+', code '+row.privacy_code+' · level '+(Number(row.rms)||0).toFixed(3)+(row.duration_ms!==''?' · '+row.duration_ms+' ms':'');
-    li.append(tm,info);events.prepend(li);
+    li.append(tm,info);
+    if(row.event==='end'||row.event==='pop'){
+      const review=document.createElement('select');
+      review.setAttribute('aria-label','Review event as radio or background');
+      for(const [value,label] of [['unreviewed','Unreviewed'],['radio','Radio heard'],['background','Background noise'],['uncertain','Uncertain']])review.add(new Option(label,value));
+      review.value=row.review||'unreviewed';
+      review.addEventListener('change',()=>{row.review=review.value;saveRecords();});
+      li.append(review);
+    }
+    events.prepend(li);
   }
   try{
     const stored=JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
@@ -199,7 +232,7 @@
     const li=document.createElement('li');li.className='empty';li.textContent='No activity logged yet.';events.append(li);
     download.disabled=true;clearLog.disabled=true;saveRecords();
   });
-  let stream, context, analyser, frame, active = false, lastSignal = 0, startTime = '', startPerf = 0, pendingStart=0, highpass, lowpass, sourceNode;
+  let stream, context, analyser, rawAnalyser, frame, active = false, lastSignal = 0, startTime = '', startPerf = 0, pendingStart=0, highpass, lowpass, sourceNode, popArmed=true, popLast=0;
   for (let i=1;i<=22;i++) channel.add(new Option(`Channel ${i}`, i));
   for (let i=0;i<=121;i++) code.add(new Option(i===0?'Code off':`Code ${i}`, i));
   markedChannel.add(new Option('Unknown','Unknown'));
@@ -221,11 +254,11 @@
   function stamp(){return new Date().toISOString();}
   markEvent.addEventListener('click',()=>{
     const when=stamp();
-    const row={event:'manual',timestamp_utc:when,channel:markedChannel.value,privacy_code:markedCode.value,rms:'',duration_ms:'',classification:markedType.value,note:markedNote.value.trim()};
+    const row={event:'manual',timestamp_utc:when,channel:markedChannel.value,privacy_code:markedCode.value,rms:'',duration_ms:'',classification:markedType.value,note:markedNote.value.trim(),review:'radio',...settingsSnapshot()};
     appendRow(row);markedNote.value='';
   });
   function log(kind, rms, when=stamp()) {
-    const row={event:kind,timestamp_utc:when,channel:mode.value==='scan'?'Unknown':channel.value,privacy_code:mode.value==='scan'?'Unknown':code.value,rms:rms.toFixed(5),duration_ms:kind==='end'?Math.round(performance.now()-startPerf):'',classification:'Audio threshold',note:''};
+    const row={event:kind,timestamp_utc:when,channel:mode.value==='scan'?'Unknown':channel.value,privacy_code:mode.value==='scan'?'Unknown':code.value,rms:rms.toFixed(5),duration_ms:kind==='end'?Math.round(performance.now()-startPerf):'',classification:kind==='pop'?'Short sound (unverified)':'Sustained sound (unverified)',note:'',review:'unreviewed',...settingsSnapshot()};
     appendRow(row);
   }
   let calibration=null,noiseSample=null;
@@ -278,6 +311,21 @@
         status.textContent='Calibration complete (estimated threshold '+suggested.toFixed(3)+'). Test with radio audio.';
       }
     }
+    if(rawAnalyser&&(detectorProfile.value==='pop'||detectorProfile.value==='both')){
+      const raw=new Float32Array(rawAnalyser.fftSize);rawAnalyser.getFloatTimeDomainData(raw);
+      let rawPower=0;
+      for(const sample of raw)rawPower+=sample*sample;
+      const rawRms=Math.sqrt(rawPower/raw.length);
+      const popLimit=Number(popThreshold.value);
+      if(rawRms<popLimit*.5)popArmed=true;
+      if(rawRms>=popLimit && popArmed && t-popLast>750){
+        popArmed=false;popLast=t;
+        log('pop',rawRms);
+      }
+    }
+    if(detectorProfile.value==='pop'){
+      frame=requestAnimationFrame(update);return;
+    }
     const limit=Number(threshold.value);
     if(rms>=limit){
       if(!pendingStart)pendingStart=t;
@@ -304,6 +352,8 @@
       highpass=context.createBiquadFilter();highpass.type='highpass';
       lowpass=context.createBiquadFilter();lowpass.type='lowpass';
       analyser=context.createAnalyser();analyser.fftSize=2048;
+      rawAnalyser=context.createAnalyser();rawAnalyser.fftSize=2048;
+      sourceNode.connect(rawAnalyser);
       configureFilter();sourceNode.connect(highpass);highpass.connect(lowpass);lowpass.connect(analyser);
       status.textContent='Microphone active'; dot.classList.add('live'); activity.textContent='Listening'; start.disabled=true; stop.disabled=false; calibrate.disabled=false; sampleNoise.disabled=false;
       update();
@@ -311,11 +361,11 @@
   });
   stop.addEventListener('click',async()=>{
     cancelAnimationFrame(frame); if(active){active=false;log('end',Number(level.textContent)||0);}
-    stream?.getTracks().forEach(t=>t.stop()); await context?.close(); stream=null;context=null;analyser=null;sourceNode=null;highpass=null;lowpass=null;pendingStart=0;
+    stream?.getTracks().forEach(t=>t.stop()); await context?.close(); stream=null;context=null;analyser=null;rawAnalyser=null;sourceNode=null;highpass=null;lowpass=null;pendingStart=0;
     calibration=null;noiseSample=null;sampleNoise.disabled=true;sampleNoise.textContent='Sample background noise (5 sec)';calibrate.disabled=true;calibrate.textContent='Calibrate quiet-room threshold';dot.classList.remove('live');status.textContent='Stopped';activity.textContent='Not listening';start.disabled=false;stop.disabled=true;bar.style.width='0%';level.textContent='0.000';
   });
   download.addEventListener('click',()=>{
-    const cols=['event','timestamp_utc','channel','privacy_code','rms','duration_ms','classification','note'];
+    const cols=['event','timestamp_utc','channel','privacy_code','rms','duration_ms','classification','note','review','threshold','filter','min_duration_ms','detector_profile','pop_threshold'];
     const csv=[cols.join(','),...records.map(r=>cols.map(k=>`"${String(r[k]).replaceAll('"','""')}"`).join(','))].join('\r\n');
     const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='rx385_activity.csv';a.click();URL.revokeObjectURL(a.href);
   });
