@@ -49,7 +49,7 @@
 <main>
   <header>
     <div class="eyebrow">Receive only · Browser prototype</div>
-    <h1>RX385 Activity Logger <small style="font-size:.35em;color:var(--accent)">v5</small></h1>
+    <h1>RX385 Activity Logger <small style="font-size:.35em;color:var(--accent)">v6</small></h1>
     <p>Log audio activity while the RX385 scans channels automatically, or while monitoring one fixed channel. Microphone audio cannot reveal the current RF channel.</p>
   </header>
   <section class="card notice"><strong>Safe setup:</strong> Use your computer microphone near the radio speaker. Don’t wire the radio’s speaker output into a computer input until the electrical levels and wiring have been checked.</section>
@@ -86,7 +86,9 @@
         </select>
       </label>
     </div>
-    <p>Voice-focused filtering reduces some low-frequency faucet rumble and high-frequency clicks, but cannot reliably distinguish a radio speaker from voices or other noises in the room. Try full audio if brief radio static goes missing.</p>
+    <p>Voice filtering and sound-duration gating may suppress nearby typing and running water, but they cannot identify whether sound came from the radio. Very short squelch pops may be missed with 120/250 ms gating.</p>
+    <div class="buttons"><button id="sampleNoise" disabled>Sample background noise (5 sec)</button></div>
+    <p id="noiseFeedback">Optional: run the faucet or type normally while sampling, with the RX385 silent. This measures a conservative noise threshold; it does not learn to recognize those sounds.</p>
     <p id="modeHelp">Scan mode: activity is logged with channel and privacy code marked Unknown. The microphone cannot read the radio display or identify RF channels.</p>
     <div class="buttons">
       <button id="start" class="primary">Start microphone</button>
@@ -116,7 +118,7 @@
     <div class="buttons"><button id="clearLog" disabled>Clear saved log</button></div>
     <ul id="events" class="events"><li class="empty">No activity logged yet.</li></ul>
   </section>
-  <footer>Filters affect analysis only, not the RX385 hardware. Background noises overlapping radio speech may still trigger detections. Runs locally in this browser tab after the page loads. Microphone access requires a secure page such as GitHub Pages or localhost. Audio is analyzed in the browser and is not uploaded by this page. Event logs are saved locally on this device when browser storage is available; CSV is your independent backup.</footer>
+  <footer>Noise sampling and filtering affect analysis only, not the RX385 hardware. Background noises overlapping radio speech may still trigger detections. Runs locally in this browser tab after the page loads. Microphone access requires a secure page such as GitHub Pages or localhost. Audio is analyzed in the browser and is not uploaded by this page. Event logs are saved locally on this device when browser storage is available; CSV is your independent backup.</footer>
 </main>
 <script>
 (() => {
@@ -133,6 +135,8 @@
   const code = document.querySelector('#code');
   const audioFilter=document.querySelector('#audioFilter');
   const minSound=document.querySelector('#minSound');
+  const sampleNoise=document.querySelector('#sampleNoise');
+  const noiseFeedback=document.querySelector('#noiseFeedback');
   const threshold = document.querySelector('#threshold');
   const thresholdValue = document.querySelector('#thresholdValue');
   const thresholdRead = document.querySelector('#thresholdRead');
@@ -224,11 +228,18 @@
     const row={event:kind,timestamp_utc:when,channel:mode.value==='scan'?'Unknown':channel.value,privacy_code:mode.value==='scan'?'Unknown':code.value,rms:rms.toFixed(5),duration_ms:kind==='end'?Math.round(performance.now()-startPerf):'',classification:'Audio threshold',note:''};
     appendRow(row);
   }
-  let calibration=null;
+  let calibration=null,noiseSample=null;
   calibrate.addEventListener('click',()=>{
     if(!analyser)return;
     calibration={samples:[],until:performance.now()+3500};
     calibrate.disabled=true;calibrate.textContent='Calibrating… keep room quiet';
+  });
+  sampleNoise.addEventListener('click',()=>{
+    if(!analyser)return;
+    noiseSample={samples:[],until:performance.now()+5000};
+    sampleNoise.disabled=true;
+    sampleNoise.textContent='Sampling background…';
+    noiseFeedback.textContent='Keep typing or running the faucet as usual while sampling. Do not include radio signals.';
   });
   function configureFilter(){
     if(!highpass||!lowpass)return;
@@ -244,6 +255,17 @@
     let sum=0; for(const x of samples) sum+=x*x;
     const rms=Math.sqrt(sum/samples.length); const t=performance.now();
     level.textContent=rms.toFixed(3); bar.style.width=`${Math.min(100,rms*400)}%`;
+    if(noiseSample){
+      noiseSample.samples.push(rms);
+      if(t>=noiseSample.until){
+        const vals=noiseSample.samples.sort((a,b)=>a-b);
+        const p95=vals[Math.floor((vals.length-1)*.95)]||0;
+        const target=Math.min(.15,Math.max(.005,Math.ceil(p95*1.35/.005)*.005));
+        threshold.value=target.toFixed(3);setThreshold();
+        noiseFeedback.textContent='Background sample complete: 95th-percentile audio '+p95.toFixed(3)+', suggested threshold '+target.toFixed(3)+'. Test with real radio sound. Strong background noise may mask weak transmissions.';
+        noiseSample=null;sampleNoise.disabled=false;sampleNoise.textContent='Sample background noise (5 sec)';
+      }
+    }
     if(calibration){
       calibration.samples.push(rms);
       if(t>=calibration.until){
@@ -283,14 +305,14 @@
       lowpass=context.createBiquadFilter();lowpass.type='lowpass';
       analyser=context.createAnalyser();analyser.fftSize=2048;
       configureFilter();sourceNode.connect(highpass);highpass.connect(lowpass);lowpass.connect(analyser);
-      status.textContent='Microphone active'; dot.classList.add('live'); activity.textContent='Listening'; start.disabled=true; stop.disabled=false; calibrate.disabled=false;
+      status.textContent='Microphone active'; dot.classList.add('live'); activity.textContent='Listening'; start.disabled=true; stop.disabled=false; calibrate.disabled=false; sampleNoise.disabled=false;
       update();
     }catch(e){status.textContent=e.name==='NotAllowedError'?'Microphone permission denied':`Microphone error: ${e.message}`;}
   });
   stop.addEventListener('click',async()=>{
     cancelAnimationFrame(frame); if(active){active=false;log('end',Number(level.textContent)||0);}
     stream?.getTracks().forEach(t=>t.stop()); await context?.close(); stream=null;context=null;analyser=null;sourceNode=null;highpass=null;lowpass=null;pendingStart=0;
-    calibration=null;calibrate.disabled=true;calibrate.textContent='Calibrate quiet-room threshold';dot.classList.remove('live');status.textContent='Stopped';activity.textContent='Not listening';start.disabled=false;stop.disabled=true;bar.style.width='0%';level.textContent='0.000';
+    calibration=null;noiseSample=null;sampleNoise.disabled=true;sampleNoise.textContent='Sample background noise (5 sec)';calibrate.disabled=true;calibrate.textContent='Calibrate quiet-room threshold';dot.classList.remove('live');status.textContent='Stopped';activity.textContent='Not listening';start.disabled=false;stop.disabled=true;bar.style.width='0%';level.textContent='0.000';
   });
   download.addEventListener('click',()=>{
     const cols=['event','timestamp_utc','channel','privacy_code','rms','duration_ms','classification','note'];
